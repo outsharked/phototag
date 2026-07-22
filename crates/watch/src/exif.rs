@@ -36,7 +36,18 @@ pub async fn read_keywords(path: &Path) -> Result<Vec<String>> {
     Ok(match obj.get("Keywords") {
         None => Vec::new(),
         Some(serde_json::Value::Array(arr)) => {
-            arr.iter().filter_map(json_value_to_keyword).collect()
+            let mut keywords = Vec::with_capacity(arr.len());
+            for v in arr {
+                match json_value_to_keyword(v) {
+                    Some(kw) => keywords.push(kw),
+                    None => bail!(
+                        "unexpected element in Keywords array for {}: {:?}",
+                        path.display(),
+                        v
+                    ),
+                }
+            }
+            keywords
         }
         Some(v) => match json_value_to_keyword(v) {
             Some(kw) => vec![kw],
@@ -54,10 +65,23 @@ pub async fn read_keywords(path: &Path) -> Result<Vec<String>> {
 /// (e.g. a keyword of `"2024"` or `"true"`) as native JSON numbers/bools
 /// rather than strings, so all three scalar shapes must be accepted or a
 /// legitimate keyword would silently vanish.
+///
+/// Integer-looking keyword text round-trips exactly; a keyword that looks
+/// like a decimal number (e.g. `"1.50"`) may be reformatted (e.g. to
+/// `"1.5"`) due to JSON number parsing -- not worth chasing further with
+/// `arbitrary_precision` for this narrow a case.
 fn json_value_to_keyword(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(i.to_string())
+            } else if let Some(u) = n.as_u64() {
+                Some(u.to_string())
+            } else {
+                Some(n.to_string())
+            }
+        }
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
@@ -281,6 +305,43 @@ mod tests {
         assert_eq!(
             read_keywords(&path).await.unwrap(),
             vec!["2024".to_string(), "dog".to_string(), "true".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_keywords_round_trips_integer_looking_keywords_exactly() {
+        // Regression test: unlike decimal-looking keywords, integer-looking
+        // keyword text (including large integers) must round-trip exactly,
+        // not get reformatted via lossy f64 conversion.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "integers.jpg");
+        write_keywords(&path, &["2024".to_string(), "1234567890".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_keywords(&path).await.unwrap(),
+            vec!["2024".to_string(), "1234567890".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_keywords_still_returns_multi_element_vec_after_array_bail_refactor() {
+        // Regression test: confirms the array branch's restructuring (to
+        // bail on inconvertible elements) didn't change behavior for a
+        // normal multi-value string list.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "array_refactor.jpg");
+        write_keywords(
+            &path,
+            &["dog".to_string(), "beach".to_string(), "sunset".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            read_keywords(&path).await.unwrap(),
+            vec!["dog".to_string(), "beach".to_string(), "sunset".to_string()]
         );
     }
 }
