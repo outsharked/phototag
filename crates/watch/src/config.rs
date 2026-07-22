@@ -47,7 +47,9 @@ impl WatchSettings {
             .and_then(|e| e.to_str())
             .map(|e| {
                 let e = e.to_lowercase();
-                self.extensions.iter().any(|allowed| allowed.to_lowercase() == e)
+                self.extensions
+                    .iter()
+                    .any(|allowed| allowed.to_lowercase() == e)
             })
             .unwrap_or(false)
     }
