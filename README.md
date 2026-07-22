@@ -6,13 +6,17 @@ Local-LLM image keyword tagging. Two binaries:
   bytes, get back `{"keywords": [...]}`. Calls a configured
   OpenAI-compatible vision model; writes nothing to disk itself.
 - **`phototag-watch`** — watches configured photo library root paths (or,
-  with `--backfill`, walks them once) and for any image without existing
-  `IPTC:Keywords`, calls `phototag-server` and writes the returned keywords
-  into the file's own `IPTC:Keywords`/`XMP-dc:Subject` metadata via
-  `exiftool`.
+  with `--backfill`, walks them once) and for any image without a
+  current-version `phototag:v...` marker, calls `phototag-server` and
+  writes the returned keywords into the file's own
+  `IPTC:Keywords`/`XMP-dc:Subject` metadata via `exiftool`, alongside
+  whatever keywords (if any) were already there. See "Version tracking"
+  below.
 
 See `AGENTS.md` for architecture and conventions, and
-`docs/specs/2026-07-21-phototag-design.md` for the full design.
+`docs/specs/2026-07-21-phototag-design.md` and
+`docs/specs/2026-07-22-version-marker-reindex-design.md` for the full
+design.
 
 ## Building
 
