@@ -45,7 +45,9 @@ async fn errors_when_gateway_request_fails() {
     let base_url = spawn_failing_gateway().await;
     let client = GatewayClient::new(&test_config(base_url));
 
-    let result = client.extract_keywords(b"fake-image-bytes", "image/jpeg").await;
+    let result = client
+        .extract_keywords(b"fake-image-bytes", "image/jpeg")
+        .await;
 
     assert!(result.is_err());
 }

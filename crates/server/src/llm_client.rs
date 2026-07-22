@@ -33,7 +33,11 @@ impl GatewayClient {
         }
     }
 
-    pub async fn extract_keywords(&self, image_bytes: &[u8], content_type: &str) -> Result<Vec<String>> {
+    pub async fn extract_keywords(
+        &self,
+        image_bytes: &[u8],
+        content_type: &str,
+    ) -> Result<Vec<String>> {
         let b64 = base64::engine::general_purpose::STANDARD.encode(image_bytes);
         let data_url = format!("data:{content_type};base64,{b64}");
 
@@ -84,7 +88,9 @@ impl GatewayClient {
 }
 
 fn parse_keywords(raw: &str) -> Vec<String> {
-    let trimmed = raw.trim();
+    let unfenced = strip_code_fence(raw.trim());
+    let unprefaced = strip_preamble(&unfenced);
+    let trimmed = unprefaced.trim();
 
     // The model sometimes answers with a JSON array despite the prompt
     // asking for a plain comma-separated list; try that first.
@@ -93,20 +99,96 @@ fn parse_keywords(raw: &str) -> Vec<String> {
     }
 
     let cleaned = trimmed.trim_start_matches('[').trim_end_matches(']');
-    let words = cleaned
-        .split(',')
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .collect();
+
+    let words: Vec<String> = if cleaned.contains(',') {
+        cleaned.split(',').map(|s| s.to_string()).collect()
+    } else if cleaned.contains('\n') {
+        cleaned.lines().map(strip_list_marker).collect()
+    } else {
+        vec![cleaned.to_string()]
+    };
+
     clean_keywords(words)
+}
+
+/// Strips a ```` ``` ```` / ```` ```json ```` code fence, keeping only the
+/// content between the fence markers (and discarding any surrounding prose)
+/// if one is present.
+fn strip_code_fence(text: &str) -> String {
+    let Some(start) = text.find("```") else {
+        return text.to_string();
+    };
+    let after_open = &text[start + 3..];
+
+    // Skip an optional language tag (e.g. "json") right after the opening
+    // fence, up to the end of that line.
+    let after_lang = match after_open.find('\n') {
+        Some(nl)
+            if after_open[..nl]
+                .trim()
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            &after_open[nl + 1..]
+        }
+        _ => after_open,
+    };
+
+    match after_lang.find("```") {
+        Some(end) => after_lang[..end].trim().to_string(),
+        None => after_lang.trim().to_string(),
+    }
+}
+
+/// Strips a conversational lead-in like "Here are the keywords:" by taking
+/// only the text after the last colon on the first line, when one is
+/// present. Leaves colon-free text (the common case) untouched.
+fn strip_preamble(text: &str) -> String {
+    let first_line = text.lines().next().unwrap_or("");
+    match first_line.rfind(':') {
+        Some(colon_idx) => text[colon_idx + 1..].trim_start().to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// Strips a leading list marker such as `1.`, `2)`, `-`, `*`, or `•` from a
+/// single line of a newline-separated list.
+fn strip_list_marker(line: &str) -> String {
+    let trimmed = line.trim().trim_start_matches(['-', '*', '•']).trim();
+
+    let digits_end = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(trimmed.len());
+    if digits_end > 0 {
+        if let Some(rest) = trimmed[digits_end..]
+            .strip_prefix('.')
+            .or_else(|| trimmed[digits_end..].strip_prefix(')'))
+        {
+            return rest.trim().to_string();
+        }
+    }
+
+    trimmed.to_string()
 }
 
 fn clean_keywords(list: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     list.into_iter()
-        .map(|k| k.trim().to_string())
+        .map(|k| normalize_keyword(&k))
         .filter(|k| !k.is_empty())
         .filter(|k| seen.insert(k.to_lowercase()))
         .collect()
+}
+
+/// Trims whitespace, surrounding quote characters, and trailing sentence
+/// punctuation (`.`, `!`, `?`) from a single candidate keyword.
+fn normalize_keyword(raw: &str) -> String {
+    raw.trim()
+        .trim_matches(|c: char| c == '"' || c == '\'')
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .trim()
+        .to_string()
 }
 
 #[derive(Serialize)]
@@ -178,5 +260,69 @@ mod tests {
     #[test]
     fn parse_keywords_drops_empty_entries() {
         assert_eq!(parse_keywords("dog, , beach,"), vec!["dog", "beach"]);
+    }
+
+    #[test]
+    fn parse_keywords_strips_markdown_json_fence() {
+        assert_eq!(
+            parse_keywords("```json\n[\"dog\", \"beach\", \"sunset\"]\n```"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_strips_plain_code_fence() {
+        assert_eq!(
+            parse_keywords("```\ndog, beach, sunset\n```"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_handles_newline_separated_list() {
+        assert_eq!(
+            parse_keywords("dog\nbeach\nsunset"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_handles_numbered_list() {
+        assert_eq!(
+            parse_keywords("1. dog\n2. beach\n3. sunset"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_handles_bulleted_list() {
+        assert_eq!(
+            parse_keywords("- dog\n- beach\n- sunset"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_strips_conversational_preamble() {
+        assert_eq!(
+            parse_keywords("Here are the keywords: dog, beach, sunset"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_strips_conversational_preamble_before_newline_list() {
+        assert_eq!(
+            parse_keywords("Here are the keywords:\ndog\nbeach\nsunset"),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_strips_trailing_sentence_punctuation() {
+        assert_eq!(
+            parse_keywords("dog, beach, sunset."),
+            vec!["dog", "beach", "sunset"]
+        );
     }
 }
