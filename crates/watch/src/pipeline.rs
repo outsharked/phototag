@@ -62,8 +62,11 @@ fn phototag_marker() -> String {
 fn find_phototag_marker(keywords: &[String]) -> Option<semver::Version> {
     keywords
         .iter()
-        .find_map(|kw| kw.strip_prefix(MARKER_PREFIX))
-        .and_then(|v| semver::Version::parse(v).ok())
+        .filter_map(|kw| {
+            kw.strip_prefix(MARKER_PREFIX)
+                .and_then(|v| semver::Version::parse(v).ok())
+        })
+        .next()
 }
 
 /// Builds the final keyword list to write: `existing` (with any old
@@ -83,6 +86,9 @@ fn merge_keywords(existing: &[String], new_content: &[String]) -> Vec<String> {
         }
     }
     for kw in new_content {
+        if kw.starts_with(MARKER_PREFIX) {
+            continue;
+        }
         if seen.insert(kw.to_lowercase()) {
             result.push(kw.clone());
         }
@@ -137,6 +143,35 @@ mod tests {
         assert_eq!(
             merged,
             vec!["dog".to_string(), "beach".to_string(), phototag_marker()]
+        );
+    }
+
+    #[test]
+    fn merge_keywords_strips_marker_shaped_strings_from_new_content_too() {
+        let existing = vec!["dog".to_string()];
+        let new_content = vec!["beach".to_string(), "phototag:v9.9.9".to_string()];
+
+        let merged = merge_keywords(&existing, &new_content);
+
+        // Only one phototag:v-prefixed entry should survive: the real marker
+        // appended at the end, not the rogue one from new_content.
+        let markers: Vec<&String> = merged
+            .iter()
+            .filter(|k| k.starts_with("phototag:v"))
+            .collect();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0], &phototag_marker());
+    }
+
+    #[test]
+    fn find_phototag_marker_skips_past_a_malformed_entry_to_find_a_valid_one() {
+        let keywords = vec![
+            "phototag:vBADVERSION".to_string(),
+            "phototag:v0.2.0".to_string(),
+        ];
+        assert_eq!(
+            find_phototag_marker(&keywords),
+            Some(semver::Version::parse("0.2.0").unwrap())
         );
     }
 }
