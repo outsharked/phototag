@@ -1,4 +1,4 @@
-# image-tagger — design
+# phototag — design
 
 ## Purpose
 
@@ -13,8 +13,8 @@ a specific photo-management app.
 
 - Not a photo management app (no albums, no UI, no database of its own).
 - Not responsible for choosing/hosting the LLM — it calls an existing local
-  LLM gateway (`reveillm`) and assumes a vision-capable model is available
-  there.
+  OpenAI-compatible LLM gateway and assumes a vision-capable model is
+  available through it.
 - Not a generic media watcher — scoped to a configured set of photo library
   root paths (one today, but the config supports multiple from the start)
   and a small set of image formats exiftool can reliably write keywords to.
@@ -25,59 +25,56 @@ Two components, one Cargo workspace, mirroring `find-anything`'s
 `crates/`-per-binary layout:
 
 ```
-outsharked/image-tagger (public GitHub repo)
+outsharked/phototag (public GitHub repo)
 ├── crates/
 │   ├── common/   — shared API types (tag request/response), config structs
-│   ├── server/   — the `image-tagger` HTTP service binary
+│   ├── server/   — the `phototag-server` HTTP service binary
 │   └── watch/    — the `phototag-watch` binary (event watcher + backfill)
-├── Dockerfile    — multi-stage build for crates/server, pushed to the
-│                   private registry for docker-lxc deployment
+├── Dockerfile    — multi-stage build for crates/server
 ├── docs/specs/   — design specs (this file)
 └── docs/plans/   — implementation plans
 ```
 
-Real deployment topology (host IPs, the `reveillm` URL, the actual watch
-path, systemd units, docker-compose stack) lives only in the private
-`homelab` repo — same split already used for `reveillm`, `mediawatcher`, and
-`find-watch`. This repo's own committed config is a placeholder-only example
-(mirroring `reveillm`'s `config.example.yaml` and `find-anything`'s
-`client.toml` template), so the public repo never encodes real network
-topology.
+Deployment config (systemd units, container-orchestration files, actual
+host addresses and paths) lives in a separate private ops repo, not here.
+Any config file committed in this repo — e.g. `phototag-watch.toml` below —
+is a generic example with placeholder values, the same convention
+`find-anything`'s `client.toml` template uses.
 
-### `image-tagger` server (`crates/server`)
+### `phototag-server` (`crates/server`)
 
 - `axum` + `tokio` HTTP service.
-- `POST /tag` — accepts raw image bytes, forwards to `reveillm`'s
-  OpenAI-compatible endpoint (`.../v1/chat/completions`) as a multimodal
-  chat request with a vision-capable model, asking for a short list of
-  concise object/scene keywords. Parses the model's response into a clean
-  keyword list and returns it as JSON. Malformed/unparseable model output
-  is a `4xx`/`5xx` response, not a crash.
+- `POST /tag` — accepts raw image bytes, forwards them to a configured
+  OpenAI-compatible chat-completions endpoint (`.../v1/chat/completions`)
+  as a multimodal chat request with a vision-capable model, asking for a
+  short list of concise object/scene keywords. Parses the model's response
+  into a clean keyword list and returns it as JSON. Malformed/unparseable
+  model output is a `4xx`/`5xx` response, not a crash.
 - No filesystem access, no state, no database — purely a stateless
-  image-in/keywords-out API. This is what lets it run on docker-lxc without
-  any NAS mount.
-- Deployed as a Docker image (multi-stage Rust build) pushed to the private
-  registry, run as a new stack on docker-lxc alongside `reveillm`.
+  image-in/keywords-out API. This is what lets it run without any NAS
+  mount, on whatever host is convenient for reaching the LLM gateway.
+- Deployed as a Docker image (multi-stage Rust build).
 
 ### `phototag-watch` (`crates/watch`)
 
-- Runs on synology1 (DS218j, 512MB RAM, ARMv7, no Docker) as a compiled
-  binary — matches `find-watch`'s existing precedent on this exact host,
-  chosen over a Python/Docker approach specifically because of the weak
-  hardware and this host's documented history of inotify-queue-overflow
-  problems under load.
+- Runs on the NAS hosting the photo library — a resource-constrained ARM
+  device (512MB RAM, no Docker) — as a compiled binary rather than a
+  Python/Docker approach, following the precedent of `find-anything`'s
+  `find-watch` client, which already runs as a lean compiled binary on this
+  class of hardware for the same reason (low idle footprint, no GC, and
+  this device's own history of inotify-queue-overflow problems under load
+  when the watcher isn't lightweight).
 - Uses the `notify` crate to watch a configured list of photo library root
-  paths (not the whole `/volume1/data` share `find-watch` covers). One root
-  today, but the config and watcher are list-based from the start since
-  adding a second library root later should be a config change, not a
-  rewrite.
+  paths. One root today, but the config and watcher are list-based from the
+  start since adding a second library root later should be a config
+  change, not a rewrite.
 - Reacts on file-close-write events for a configured extension allow-list
   (`.jpg`, `.jpeg`, `.png`, `.tiff`, `.heic` by default — the formats
   exiftool reliably writes IPTC/XMP keywords to), with a short debounce.
 - Before tagging, checks the file's existing `IPTC:Keywords` via exiftool;
   skips if already present (idempotent — a stray re-trigger or a re-run
   after a crash is a no-op, no separate progress database needed).
-- POSTs the file to the configured `image-tagger` server, receives the
+- POSTs the file to the configured `phototag-server`, receives the
   keyword list, then shells out to `exiftool` to write
   `IPTC:Keywords`/`XMP-dc:Subject` in place (no `_original` backup files —
   a one-directional metadata add on files that aren't otherwise being
@@ -86,25 +83,26 @@ topology.
   once (optionally restricted to a single named root via a flag), applying
   the same tag-and-write logic to every file that doesn't yet have
   keywords, instead of watching. This covers the initial catch-up pass over
-  the existing library, and is also the manual recovery path if
-  `image-tagger`/`reveillm`/MUSIC3 was unreachable during normal watching
-  (no automatic retry loop — matches the manual-rescan philosophy already
-  established by `mediawatcher` on synology2).
+  the existing library, and is also the manual recovery path if the
+  `phototag-server` service or the LLM gateway behind it was unreachable
+  during normal watching (deliberately no automatic retry loop — a
+  one-shot manual re-run is simpler to reason about than a background
+  retry policy).
 - Config file (`phototag-watch.toml`, mirrors `find-anything`'s
   `client.toml` `[[sources]]` shape): a `[[roots]]` array (each with a
-  `name` and `path`), plus global `image-tagger` URL, extension allow-list,
+  `name` and `path`), plus global `phototag-server` URL, extension allow-list,
   and debounce interval. Example:
 
   ```toml
-  server_url = "http://image-tagger:8080"
+  server_url = "http://phototag-server:8080"
 
   [[roots]]
   name = "pictures"
-  path = "/volume1/data/pictures"
+  path = "/path/to/pictures"
 
   # [[roots]]
   # name = "second-library"
-  # path = "/volume1/data/some-other-photos"
+  # path = "/path/to/other/photos"
 
   [watch]
   extensions = ["jpg", "jpeg", "png", "tiff", "heic"]
@@ -120,13 +118,14 @@ new/changed image under any watched root
 phototag-watch: has IPTC:Keywords already? ──yes──▶ skip
         │ no
         ▼
-POST image bytes ──▶ image-tagger (docker-lxc)
+POST image bytes ──▶ phototag-server
         │                   │
         │                   ▼
-        │           reveillm (WoL-wakes MUSIC3 if asleep)
+        │           LLM gateway (may wake a sleeping
+        │           GPU host before forwarding)
         │                   │
         │                   ▼
-        │           Ollama qwen3-vl:30b, multimodal chat completion
+        │           vision-capable model, multimodal chat completion
         │                   │
         │           parse response → keyword list
         ◀───────────────────┘
@@ -136,10 +135,10 @@ exiftool: write IPTC:Keywords + XMP-dc:Subject in place
 
 ## Error handling
 
-- `phototag-watch` → `image-tagger` request fails, times out, or
-  `image-tagger` → `reveillm` fails (including a MUSIC3 wake timeout): log
-  and move on to the next file. No automatic retry. Recovery is a manual
-  `--backfill` re-run once the underlying issue is fixed.
+- `phototag-watch` → `phototag-server` request fails, times out, or
+  `phototag-server` → the LLM gateway fails (including a slow-to-wake GPU
+  host): log and move on to the next file. No automatic retry. Recovery is
+  a manual `--backfill` re-run once the underlying issue is fixed.
 - Unparseable/empty model output: log and skip that file — never write a
   garbage or empty keyword list.
 - `phototag-watch` crash or restart mid-run: safe by construction, since the
@@ -150,9 +149,9 @@ exiftool: write IPTC:Keywords + XMP-dc:Subject in place
 
 - `crates/server`: integration tests in `crates/server/tests/` using a
   `TestServer`-style harness (matching `find-anything`'s convention),
-  hitting `POST /tag` against a mocked `reveillm` endpoint.
+  hitting `POST /tag` against a mocked LLM-gateway endpoint.
 - `crates/watch`: end-to-end test invoking the compiled binary against a
-  temp directory and a mock `image-tagger` server, covering both watch mode
+  temp directory and a mock `phototag-server`, covering both watch mode
   and `--backfill` mode, including a config with multiple `[[roots]]`
   pointing at separate temp directories.
 - Manual validation before enabling the systemd unit: run `--backfill`
@@ -166,5 +165,5 @@ exiftool: write IPTC:Keywords + XMP-dc:Subject in place
 - Whether `crates/common` needs a shared HTTP client wrapper or whether
   `crates/watch` and `crates/server`'s test harness can each use `reqwest`
   directly.
-- Confirm `exiftool` (`perl-image-exiftool` via Entware) is installable on
-  synology1's DSM version before relying on it.
+- Confirm `exiftool` (e.g. `perl-image-exiftool` via Entware) is installable
+  on the target NAS's OS/package manager before relying on it.
