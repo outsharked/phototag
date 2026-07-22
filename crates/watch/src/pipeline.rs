@@ -55,6 +55,19 @@ fn phototag_marker() -> String {
     format!("{MARKER_PREFIX}{}", current_version())
 }
 
+/// True if `kw` is a genuine `phototag:v{semver}` marker — i.e. it starts
+/// with `MARKER_PREFIX` AND the remainder parses as valid semver. A string
+/// that merely starts with `phototag:v` (e.g. a human-written
+/// `phototag:vacation` keyword) does not count. This is the single source
+/// of truth for what counts as a marker, shared by detection
+/// (`find_phototag_marker`) and stripping (`merge_keywords`) so they can
+/// never drift apart.
+fn is_phototag_marker(kw: &str) -> bool {
+    kw.strip_prefix(MARKER_PREFIX)
+        .and_then(|v| semver::Version::parse(v).ok())
+        .is_some()
+}
+
 /// Scans `keywords` for a `phototag:v...` entry and parses its version. A
 /// malformed marker (e.g. hand-edited to invalid semver) is treated the
 /// same as no marker at all, so the file gets tagged fresh rather than
@@ -78,7 +91,7 @@ fn merge_keywords(existing: &[String], new_content: &[String]) -> Vec<String> {
     let mut result = Vec::new();
 
     for kw in existing {
-        if kw.starts_with(MARKER_PREFIX) {
+        if is_phototag_marker(kw) {
             continue;
         }
         if seen.insert(kw.to_lowercase()) {
@@ -86,7 +99,7 @@ fn merge_keywords(existing: &[String], new_content: &[String]) -> Vec<String> {
         }
     }
     for kw in new_content {
-        if kw.starts_with(MARKER_PREFIX) {
+        if is_phototag_marker(kw) {
             continue;
         }
         if seen.insert(kw.to_lowercase()) {
@@ -161,6 +174,27 @@ mod tests {
             .collect();
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0], &phototag_marker());
+    }
+
+    #[test]
+    fn merge_keywords_only_strips_a_genuine_marker_not_a_prefix_lookalike() {
+        let existing = vec!["phototag:vacation".to_string()];
+        let new_content = vec!["beach".to_string()];
+
+        let merged = merge_keywords(&existing, &new_content);
+
+        // "phototag:vacation" is not a valid marker (not real semver after the
+        // prefix) and must survive — only a genuine phototag:v{semver} marker
+        // should ever be stripped.
+        assert!(merged.contains(&"phototag:vacation".to_string()));
+        assert!(merged.contains(&"beach".to_string()));
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|k| k.starts_with("phototag:v"))
+                .count(),
+            2 // the surviving lookalike, plus the one real marker appended
+        );
     }
 
     #[test]
