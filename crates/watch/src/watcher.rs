@@ -75,7 +75,7 @@ pub async fn run_watch(config: Config, client: TaggerClient) -> Result<()> {
                     if !path.is_file() {
                         continue;
                     }
-                    match tag_one_file(&path, &client).await {
+                    match tag_one_file(&path, &client, false).await {
                         Ok(outcome) => tracing::info!(path = %path.display(), ?outcome, "processed"),
                         Err(e) => tracing::warn!(path = %path.display(), error = %e, "tagging failed, skipping"),
                     }
