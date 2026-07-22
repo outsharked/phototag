@@ -101,7 +101,18 @@ fn parse_keywords(raw: &str) -> Vec<String> {
     let cleaned = trimmed.trim_start_matches('[').trim_end_matches(']');
 
     let words: Vec<String> = if cleaned.contains(',') {
-        cleaned.split(',').map(|s| s.to_string()).collect()
+        // A comma-separated candidate can still carry a trailing chatty
+        // sign-off glued on by a newline (e.g. "sunset\n\nLet me know if
+        // you need anything else!"). Split each comma-delimited piece on
+        // newlines too, so the real keyword and the leftover prose become
+        // separate candidates instead of one fused, unusable string —
+        // `is_plausible_keyword` then drops the prose fragment on its own
+        // merits rather than taking the keyword down with it.
+        cleaned
+            .split(',')
+            .flat_map(|piece| piece.lines())
+            .map(|s| s.to_string())
+            .collect()
     } else if cleaned.contains('\n') {
         cleaned.lines().map(strip_list_marker).collect()
     } else {
@@ -171,11 +182,21 @@ fn strip_list_marker(line: &str) -> String {
     trimmed.to_string()
 }
 
+/// A real keyword is never more than this many characters — beyond this,
+/// a candidate is a leftover prose fragment (preamble/sign-off), not a
+/// word or short phrase.
+const MAX_KEYWORD_LEN: usize = 40;
+
+/// A real keyword is a word or a short phrase ("golden retriever"), never
+/// a run of many words strung into a sentence.
+const MAX_KEYWORD_WORDS: usize = 5;
+
 fn clean_keywords(list: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     list.into_iter()
         .map(|k| normalize_keyword(&k))
         .filter(|k| !k.is_empty())
+        .filter(|k| is_plausible_keyword(k))
         .filter(|k| seen.insert(k.to_lowercase()))
         .collect()
 }
@@ -189,6 +210,19 @@ fn normalize_keyword(raw: &str) -> String {
         .trim_end_matches(['.', '!', '?'])
         .trim()
         .to_string()
+}
+
+/// A structural backstop against leftover prose fragments (conversational
+/// preambles/sign-offs the string-pattern heuristics above didn't catch,
+/// or any other phrasing we haven't anticipated): a real keyword is a word
+/// or short phrase, never multi-line and never sentence-length. Candidates
+/// that fail this get dropped rather than corrupting the result — the
+/// caller's `keywords.is_empty()` check still catches the case where
+/// nothing plausible survives.
+fn is_plausible_keyword(candidate: &str) -> bool {
+    !candidate.contains(['\n', '\r'])
+        && candidate.chars().count() <= MAX_KEYWORD_LEN
+        && candidate.split_whitespace().count() <= MAX_KEYWORD_WORDS
 }
 
 #[derive(Serialize)]
@@ -323,6 +357,26 @@ mod tests {
         assert_eq!(
             parse_keywords("dog, beach, sunset."),
             vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_drops_trailing_conversational_sign_off() {
+        assert_eq!(
+            parse_keywords(
+                "Keywords: dog, beach, sunset\n\nLet me know if you need anything else!"
+            ),
+            vec!["dog", "beach", "sunset"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_drops_overlong_candidate() {
+        assert_eq!(
+            parse_keywords(
+                "dog, beach, this is a very long sentence fragment that is not a real keyword at all"
+            ),
+            vec!["dog", "beach"]
         );
     }
 }
