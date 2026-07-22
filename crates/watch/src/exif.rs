@@ -3,18 +3,18 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
 
-/// Returns true if the file already has a non-empty `IPTC:Keywords` value.
-pub async fn has_keywords(path: &Path) -> Result<bool> {
+/// Returns the file's current `IPTC:Keywords` list (empty if none set).
+pub async fn read_keywords(path: &Path) -> Result<Vec<String>> {
     let output = Command::new("exiftool")
         .arg("-charset")
         .arg("iptc=UTF8")
+        .arg("-j")
         .arg("-IPTC:Keywords")
-        .arg("-s3")
         .arg("--")
         .arg(path)
         .output()
         .await
-        .context("running exiftool -IPTC:Keywords")?;
+        .context("running exiftool -j -IPTC:Keywords")?;
 
     if !output.status.success() {
         bail!(
@@ -24,7 +24,30 @@ pub async fn has_keywords(path: &Path) -> Result<bool> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&stdout)
+        .with_context(|| format!("parsing exiftool JSON output for {}", path.display()))?;
+    let obj = parsed
+        .into_iter()
+        .next()
+        .with_context(|| format!("exiftool returned no JSON object for {}", path.display()))?;
+
+    Ok(match obj.get("Keywords") {
+        None => Vec::new(),
+        Some(serde_json::Value::String(s)) => vec![s.clone()],
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
+        Some(_) => Vec::new(),
+    })
+}
+
+/// Convenience predicate built on `read_keywords`: true if the file has
+/// any `IPTC:Keywords` value at all, regardless of content.
+pub async fn has_keywords(path: &Path) -> Result<bool> {
+    Ok(!read_keywords(path).await?.is_empty())
 }
 
 /// Writes `keywords` into the file's `IPTC:Keywords` and `XMP-dc:Subject`
@@ -155,5 +178,41 @@ mod tests {
 
         assert!(has_keywords(&path).await.unwrap());
         assert_eq!(read_tag(&path, "IPTC:Keywords").await, "dog");
+    }
+
+    #[tokio::test]
+    async fn read_keywords_returns_empty_vec_for_fresh_image() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "fresh.jpg");
+
+        assert_eq!(read_keywords(&path).await.unwrap(), Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn read_keywords_returns_single_element_vec_for_one_keyword() {
+        // Regression test for the exiftool JSON quirk: a single list value
+        // serializes as a bare string, not a one-element array.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "one.jpg");
+        write_keywords(&path, &["dog".to_string()]).await.unwrap();
+
+        assert_eq!(read_keywords(&path).await.unwrap(), vec!["dog".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn read_keywords_returns_multi_element_vec_for_multiple_keywords() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "many.jpg");
+        write_keywords(
+            &path,
+            &["dog".to_string(), "beach".to_string(), "sunset".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            read_keywords(&path).await.unwrap(),
+            vec!["dog".to_string(), "beach".to_string(), "sunset".to_string()]
+        );
     }
 }
