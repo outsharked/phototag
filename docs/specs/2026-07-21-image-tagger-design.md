@@ -15,8 +15,9 @@ a specific photo-management app.
 - Not responsible for choosing/hosting the LLM — it calls an existing local
   LLM gateway (`reveillm`) and assumes a vision-capable model is available
   there.
-- Not a generic media watcher — scoped to a single photo library path and a
-  small set of image formats exiftool can reliably write keywords to.
+- Not a generic media watcher — scoped to a configured set of photo library
+  root paths (one today, but the config supports multiple from the start)
+  and a small set of image formats exiftool can reliably write keywords to.
 
 ## Architecture
 
@@ -31,7 +32,8 @@ outsharked/image-tagger (public GitHub repo)
 │   └── watch/    — the `phototag-watch` binary (event watcher + backfill)
 ├── Dockerfile    — multi-stage build for crates/server, pushed to the
 │                   private registry for docker-lxc deployment
-└── docs/superpowers/specs/ — this file
+├── docs/specs/   — design specs (this file)
+└── docs/plans/   — implementation plans
 ```
 
 Real deployment topology (host IPs, the `reveillm` URL, the actual watch
@@ -64,8 +66,11 @@ topology.
   chosen over a Python/Docker approach specifically because of the weak
   hardware and this host's documented history of inotify-queue-overflow
   problems under load.
-- Uses the `notify` crate to watch a single configured photo library path
-  (not the whole `/volume1/data` share `find-watch` covers).
+- Uses the `notify` crate to watch a configured list of photo library root
+  paths (not the whole `/volume1/data` share `find-watch` covers). One root
+  today, but the config and watcher are list-based from the start since
+  adding a second library root later should be a config change, not a
+  rewrite.
 - Reacts on file-close-write events for a configured extension allow-list
   (`.jpg`, `.jpeg`, `.png`, `.tiff`, `.heic` by default — the formats
   exiftool reliably writes IPTC/XMP keywords to), with a short debounce.
@@ -77,21 +82,39 @@ topology.
   `IPTC:Keywords`/`XMP-dc:Subject` in place (no `_original` backup files —
   a one-directional metadata add on files that aren't otherwise being
   edited).
-- Same binary also supports a `--backfill` mode: walks the configured path
-  once, applying the same tag-and-write logic to every file that doesn't
-  yet have keywords, instead of watching. This covers the initial catch-up
-  pass over the existing library, and is also the manual recovery path if
+- Same binary also supports a `--backfill` mode: walks each configured root
+  once (optionally restricted to a single named root via a flag), applying
+  the same tag-and-write logic to every file that doesn't yet have
+  keywords, instead of watching. This covers the initial catch-up pass over
+  the existing library, and is also the manual recovery path if
   `image-tagger`/`reveillm`/MUSIC3 was unreachable during normal watching
   (no automatic retry loop — matches the manual-rescan philosophy already
   established by `mediawatcher` on synology2).
 - Config file (`phototag-watch.toml`, mirrors `find-anything`'s
-  `client.toml` shape): watch path, `image-tagger` URL, extension
-  allow-list, debounce interval.
+  `client.toml` `[[sources]]` shape): a `[[roots]]` array (each with a
+  `name` and `path`), plus global `image-tagger` URL, extension allow-list,
+  and debounce interval. Example:
+
+  ```toml
+  server_url = "http://image-tagger:8080"
+
+  [[roots]]
+  name = "pictures"
+  path = "/volume1/data/pictures"
+
+  # [[roots]]
+  # name = "second-library"
+  # path = "/volume1/data/some-other-photos"
+
+  [watch]
+  extensions = ["jpg", "jpeg", "png", "tiff", "heic"]
+  debounce_ms = 2000
+  ```
 
 ## Data flow
 
 ```
-new/changed image under watched path
+new/changed image under any watched root
         │  (notify, debounced, extension-filtered)
         ▼
 phototag-watch: has IPTC:Keywords already? ──yes──▶ skip
@@ -130,7 +153,8 @@ exiftool: write IPTC:Keywords + XMP-dc:Subject in place
   hitting `POST /tag` against a mocked `reveillm` endpoint.
 - `crates/watch`: end-to-end test invoking the compiled binary against a
   temp directory and a mock `image-tagger` server, covering both watch mode
-  and `--backfill` mode.
+  and `--backfill` mode, including a config with multiple `[[roots]]`
+  pointing at separate temp directories.
 - Manual validation before enabling the systemd unit: run `--backfill`
   once against a small real subfolder, inspect the written keywords with
   `exiftool`, confirm Immich (once set up as an external library) surfaces
