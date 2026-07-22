@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use walkdir::WalkDir;
 
 use crate::client::TaggerClient;
@@ -12,14 +12,21 @@ pub async fn run_backfill(
     client: &TaggerClient,
     only_root: Option<&str>,
 ) -> Result<()> {
+    let mut matched_any = false;
     for root in &config.roots {
         if let Some(name) = only_root {
             if root.name != name {
                 continue;
             }
+            matched_any = true;
         }
         tracing::info!(root = %root.name, path = %root.path.display(), "backfill starting");
         backfill_root(root, &config.watch, client).await;
+    }
+    if let Some(name) = only_root {
+        if !matched_any {
+            bail!("no configured root named '{name}'");
+        }
     }
     Ok(())
 }
@@ -29,7 +36,14 @@ async fn backfill_root(
     watch: &crate::config::WatchSettings,
     client: &TaggerClient,
 ) {
-    for entry in WalkDir::new(&root.path).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&root.path) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(root = %root.name, error = %e, "error walking directory tree, skipping entry");
+                continue;
+            }
+        };
         if !entry.file_type().is_file() {
             continue;
         }
