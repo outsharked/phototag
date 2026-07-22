@@ -6,11 +6,15 @@ use crate::config::{Config, RootConfig};
 use crate::pipeline::{tag_one_file, TagOutcome};
 
 /// Walks each configured root once, tagging every file that doesn't yet
-/// have keywords. If `only_root` is set, only that named root is walked.
+/// have a current-version phototag marker. If `only_root` is set, only
+/// that named root is walked. If `reindex_outdated` is true, files whose
+/// marker is older than the running binary's version are re-tagged too
+/// (see `pipeline::tag_one_file`); otherwise they're left alone.
 pub async fn run_backfill(
     config: &Config,
     client: &TaggerClient,
     only_root: Option<&str>,
+    reindex_outdated: bool,
 ) -> Result<()> {
     let mut matched_any = false;
     for root in &config.roots {
@@ -21,7 +25,7 @@ pub async fn run_backfill(
             matched_any = true;
         }
         tracing::info!(root = %root.name, path = %root.path.display(), "backfill starting");
-        backfill_root(root, &config.watch, client).await;
+        backfill_root(root, &config.watch, client, reindex_outdated).await;
     }
     if let Some(name) = only_root {
         if !matched_any {
@@ -35,6 +39,7 @@ async fn backfill_root(
     root: &RootConfig,
     watch: &crate::config::WatchSettings,
     client: &TaggerClient,
+    reindex_outdated: bool,
 ) {
     for entry in WalkDir::new(&root.path) {
         let entry = match entry {
@@ -51,7 +56,7 @@ async fn backfill_root(
         if !watch.matches_extension(path) {
             continue;
         }
-        match tag_one_file(path, client).await {
+        match tag_one_file(path, client, reindex_outdated).await {
             Ok(TagOutcome::Tagged(keywords)) => {
                 tracing::info!(path = %path.display(), ?keywords, "tagged");
             }
