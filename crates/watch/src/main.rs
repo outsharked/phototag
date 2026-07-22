@@ -20,6 +20,12 @@ struct Cli {
     /// With --backfill, only process the root with this name.
     #[arg(long)]
     backfill_root: Option<String>,
+
+    /// With --backfill, also re-tag files whose phototag marker is older
+    /// than this build's version (adding fresh keywords, never removing
+    /// existing ones). Has no effect without --backfill.
+    #[arg(long)]
+    reindex_outdated: bool,
 }
 
 #[tokio::main]
@@ -35,7 +41,13 @@ async fn main() -> anyhow::Result<()> {
     let client = TaggerClient::new(config.server_url.clone());
 
     if cli.backfill {
-        backfill::run_backfill(&config, &client, cli.backfill_root.as_deref()).await?;
+        backfill::run_backfill(
+            &config,
+            &client,
+            cli.backfill_root.as_deref(),
+            cli.reindex_outdated,
+        )
+        .await?;
     } else {
         watcher::run_watch(config, client).await?;
     }
