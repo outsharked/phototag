@@ -38,4 +38,16 @@ Copy `phototag-watch.example.toml`, fill in real paths and your
 ```bash
 cargo run -p phototag-watch -- --config your-config.toml           # watch mode
 cargo run -p phototag-watch -- --config your-config.toml --backfill # one-shot catch-up
+cargo run -p phototag-watch -- --config your-config.toml --backfill --reindex-outdated # also re-tag files from an older phototag-watch version
 ```
+
+## Version tracking
+
+Every file `phototag-watch` tags gets a `phototag:v{version}` keyword
+added alongside the content keywords, recording which `phototag-watch`
+version indexed it. On later runs, a file with a marker at or above the
+current version is skipped entirely (no LLM call). A file with an older
+marker is also skipped by default — pass `--reindex-outdated` (with
+`--backfill`) to re-tag those too. Reindexing only ever adds keywords; it
+never removes anything already on the file, including keywords added by
+hand.
