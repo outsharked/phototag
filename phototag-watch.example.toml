@@ -1,0 +1,19 @@
+# phototag-watch.example.toml
+#
+# Copy this file, fill in real values, and pass it to phototag-watch with
+# --config. Real deployment values (actual host, actual paths) belong in
+# your own private ops config, not in this repo.
+
+server_url = "http://phototag-server:8080"
+
+[[roots]]
+name = "pictures"
+path = "/path/to/pictures"
+
+# [[roots]]
+# name = "second-library"
+# path = "/path/to/other/photos"
+
+[watch]
+extensions = ["jpg", "jpeg", "png", "tiff", "heic"]
+debounce_ms = 2000
