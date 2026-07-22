@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/common",
+    "crates/server",
+    "crates/watch",
+]
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "net", "time", "process", "sync", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
+tempfile = "3"

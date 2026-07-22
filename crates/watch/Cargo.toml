@@ -1,0 +1,33 @@
+[package]
+name = "phototag-watch"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "phototag-watch"
+path = "src/main.rs"
+
+[lib]
+name = "phototag_watch"
+path = "src/lib.rs"
+
+[dependencies]
+phototag-common = { path = "../common" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+notify = "8"
+reqwest = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+walkdir = "2"
+
+[dev-dependencies]
+phototag-server = { path = "../server" }
+axum = "0.8"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

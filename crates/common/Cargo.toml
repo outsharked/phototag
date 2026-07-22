@@ -1,0 +1,11 @@
+[package]
+name = "phototag-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+
+[lib]
+name = "phototag_common"
+path = "src/lib.rs"
