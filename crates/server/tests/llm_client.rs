@@ -51,3 +51,38 @@ async fn errors_when_gateway_request_fails() {
 
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn errors_on_apology_refusal_response() {
+    let base_url =
+        spawn_mock_gateway("I'm sorry, but I cannot help with that request as it violates policy.")
+            .await;
+    let client = GatewayClient::new(&test_config(base_url));
+
+    let result = client
+        .extract_keywords(b"fake-image-bytes", "image/jpeg")
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a refusal response should bail rather than return a single bogus keyword"
+    );
+}
+
+#[tokio::test]
+async fn errors_on_unfortunately_refusal_response() {
+    let base_url = spawn_mock_gateway(
+        "Unfortunately, I am not able to process this image due to content policy restrictions.",
+    )
+    .await;
+    let client = GatewayClient::new(&test_config(base_url));
+
+    let result = client
+        .extract_keywords(b"fake-image-bytes", "image/jpeg")
+        .await;
+
+    assert!(
+        result.is_err(),
+        "a refusal response should bail rather than return a single bogus keyword"
+    );
+}

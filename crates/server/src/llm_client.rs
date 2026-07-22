@@ -80,13 +80,31 @@ impl GatewayClient {
             .content;
 
         let keywords = parse_keywords(&content);
-        if keywords.is_empty() {
+        // DEFAULT_PROMPT asks for "3 to 8 concise keywords", so a genuine
+        // answer never yields just one. A lone survivor is far more likely
+        // to be a refusal/hedge fragment ("I'm sorry", "Unfortunately")
+        // that happened to be short enough to slip past the plausibility
+        // filter than an actual one-keyword answer, so treat it the same
+        // as zero: a failed parse.
+        if keywords.len() < 2 {
             bail!("no keywords could be parsed from LLM response: {content:?}");
         }
         Ok(keywords)
     }
 }
 
+/// Best-effort heuristic parsing of free-text LLM output — not
+/// adversarially robust. A short trailing conversational sign-off (e.g.
+/// "Hope this helps!") can occasionally slip through `is_plausible_keyword`
+/// as an extra spurious keyword alongside genuine ones, since a short
+/// closing clause is structurally indistinguishable from a legitimate
+/// short keyword. This is a known, accepted limitation: the damage is
+/// bounded (one low-value extra word among otherwise-correct keywords,
+/// not systematic corruption), and chasing every possible short
+/// sign-off/preamble phrasing with more string heuristics is an unbounded
+/// fight. If this becomes a real problem in practice, the better fix is
+/// requesting structured/JSON output from the gateway rather than adding
+/// more free-text parsing rules.
 fn parse_keywords(raw: &str) -> Vec<String> {
     let unfenced = strip_code_fence(raw.trim());
     let unprefaced = strip_preamble(&unfenced);
@@ -377,6 +395,32 @@ mod tests {
                 "dog, beach, this is a very long sentence fragment that is not a real keyword at all"
             ),
             vec!["dog", "beach"]
+        );
+    }
+
+    // The plausibility filter alone can't distinguish a short refusal/hedge
+    // opener from a genuinely short keyword — both survive `parse_keywords`
+    // as a single candidate here. It's `GatewayClient::extract_keywords`'s
+    // `keywords.len() < 2` check (tied to DEFAULT_PROMPT's "3 to 8 keywords"
+    // contract) that turns this single leftover fragment into a bailed
+    // error rather than a bogus result; see the
+    // `errors_on_apology_refusal_response` / `errors_on_unfortunately_refusal_response`
+    // integration tests in `tests/llm_client.rs`.
+    #[test]
+    fn parse_keywords_reduces_apology_refusal_to_single_fragment() {
+        assert_eq!(
+            parse_keywords("I'm sorry, but I cannot help with that request as it violates policy."),
+            vec!["I'm sorry"]
+        );
+    }
+
+    #[test]
+    fn parse_keywords_reduces_unfortunately_refusal_to_single_fragment() {
+        assert_eq!(
+            parse_keywords(
+                "Unfortunately, I am not able to process this image due to content policy restrictions."
+            ),
+            vec!["Unfortunately"]
         );
     }
 }
