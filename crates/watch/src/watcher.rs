@@ -41,6 +41,10 @@ pub async fn run_watch(config: Config, client: TaggerClient) -> Result<()> {
         tracing::info!(root = %root.name, path = %root.path.display(), "watching");
     }
 
+    if config.roots.is_empty() {
+        tracing::warn!("no roots configured, watcher will run but tag nothing");
+    }
+
     let debounce = Duration::from_millis(config.watch.debounce_ms);
     let mut pending: HashMap<PathBuf, Instant> = HashMap::new();
 

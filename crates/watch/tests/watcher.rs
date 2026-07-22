@@ -50,3 +50,33 @@ async fn watcher_tags_a_newly_created_file() {
 
     watch_handle.abort();
 }
+
+#[tokio::test]
+async fn watcher_with_no_roots_runs_without_panicking_or_erroring() {
+    let gateway_url = spawn_mock_gateway("dog, beach").await;
+    let server_url = spawn_phototag_server(gateway_url).await;
+    let client = TaggerClient::new(server_url);
+
+    let config = Config {
+        server_url: "unused-in-this-test".into(),
+        roots: vec![],
+        watch: WatchSettings {
+            debounce_ms: 100,
+            ..WatchSettings::default()
+        },
+    };
+
+    let watch_handle = tokio::spawn(run_watch(config, client));
+
+    // With no roots configured there's nothing to watch, so `run_watch`
+    // should just block forever on the event channel rather than panicking,
+    // returning an error, or busy-looping. Give it a moment and confirm the
+    // task is still running (i.e. hasn't finished with a panic or an Err).
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !watch_handle.is_finished(),
+        "run_watch should still be running with an empty roots list, not have exited"
+    );
+
+    watch_handle.abort();
+}
