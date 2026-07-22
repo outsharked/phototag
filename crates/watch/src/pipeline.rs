@@ -55,17 +55,21 @@ fn phototag_marker() -> String {
     format!("{MARKER_PREFIX}{}", current_version())
 }
 
-/// True if `kw` is a genuine `phototag:v{semver}` marker — i.e. it starts
-/// with `MARKER_PREFIX` AND the remainder parses as valid semver. A string
-/// that merely starts with `phototag:v` (e.g. a human-written
-/// `phototag:vacation` keyword) does not count. This is the single source
-/// of truth for what counts as a marker, shared by detection
+/// If `kw` is a genuine `phototag:v{semver}` marker — i.e. it starts with
+/// `MARKER_PREFIX` AND the remainder parses as valid semver — returns its
+/// parsed version. A string that merely starts with `phototag:v` (e.g. a
+/// human-written `phototag:vacation` keyword) returns `None`. This is the
+/// single source of truth for what counts as a marker, shared by detection
 /// (`find_phototag_marker`) and stripping (`merge_keywords`) so they can
 /// never drift apart.
-fn is_phototag_marker(kw: &str) -> bool {
+fn parse_marker(kw: &str) -> Option<semver::Version> {
     kw.strip_prefix(MARKER_PREFIX)
         .and_then(|v| semver::Version::parse(v).ok())
-        .is_some()
+}
+
+/// True if `kw` is a genuine `phototag:v{semver}` marker. See `parse_marker`.
+fn is_phototag_marker(kw: &str) -> bool {
+    parse_marker(kw).is_some()
 }
 
 /// Scans `keywords` for a `phototag:v...` entry and parses its version. A
@@ -73,13 +77,7 @@ fn is_phototag_marker(kw: &str) -> bool {
 /// same as no marker at all, so the file gets tagged fresh rather than
 /// erroring.
 fn find_phototag_marker(keywords: &[String]) -> Option<semver::Version> {
-    keywords
-        .iter()
-        .filter_map(|kw| {
-            kw.strip_prefix(MARKER_PREFIX)
-                .and_then(|v| semver::Version::parse(v).ok())
-        })
-        .next()
+    keywords.iter().filter_map(|kw| parse_marker(kw)).next()
 }
 
 /// Builds the final keyword list to write: `existing` (with any old
