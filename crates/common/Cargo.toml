@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 serde = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [lib]
 name = "phototag_common"
 path = "src/lib.rs"
