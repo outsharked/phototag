@@ -6,8 +6,11 @@ use tokio::process::Command;
 /// Returns true if the file already has a non-empty `IPTC:Keywords` value.
 pub async fn has_keywords(path: &Path) -> Result<bool> {
     let output = Command::new("exiftool")
+        .arg("-charset")
+        .arg("iptc=UTF8")
         .arg("-IPTC:Keywords")
         .arg("-s3")
+        .arg("--")
         .arg(path)
         .output()
         .await
@@ -15,8 +18,9 @@ pub async fn has_keywords(path: &Path) -> Result<bool> {
 
     if !output.status.success() {
         bail!(
-            "exiftool exited with {}: {}",
+            "exiftool exited with {} for {}: {}",
             output.status,
+            path.display(),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -35,10 +39,12 @@ pub async fn write_keywords(path: &Path, keywords: &[String]) -> Result<()> {
 
     let mut cmd = Command::new("exiftool");
     cmd.arg("-overwrite_original");
+    cmd.arg("-charset").arg("iptc=UTF8");
     for kw in keywords {
         cmd.arg(format!("-IPTC:Keywords={kw}"));
         cmd.arg(format!("-XMP-dc:Subject={kw}"));
     }
+    cmd.arg("--");
     cmd.arg(path);
 
     let output = cmd
@@ -47,8 +53,9 @@ pub async fn write_keywords(path: &Path, keywords: &[String]) -> Result<()> {
         .context("running exiftool to write keywords")?;
     if !output.status.success() {
         bail!(
-            "exiftool exited with {}: {}",
+            "exiftool exited with {} for {}: {}",
             output.status,
+            path.display(),
             String::from_utf8_lossy(&output.stderr)
         );
     }
@@ -64,6 +71,28 @@ mod tests {
         let img = image::RgbImage::new(4, 4);
         img.save(&path).expect("save test jpeg");
         path
+    }
+
+    /// Test-only helper: reads a raw tag value via exiftool, independent of
+    /// the functions under test, so assertions actually verify what got
+    /// written rather than just re-exercising `has_keywords`.
+    async fn read_tag(path: &std::path::Path, tag: &str) -> String {
+        let output = tokio::process::Command::new("exiftool")
+            .arg("-charset")
+            .arg("iptc=UTF8")
+            .arg(format!("-{tag}"))
+            .arg("-s3")
+            .arg("--")
+            .arg(path)
+            .output()
+            .await
+            .expect("running exiftool to read tag");
+        assert!(
+            output.status.success(),
+            "exiftool read failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     #[tokio::test]
@@ -84,6 +113,12 @@ mod tests {
             .unwrap();
 
         assert!(has_keywords(&path).await.unwrap());
+        assert_eq!(read_tag(&path, "IPTC:Keywords").await, "dog, beach");
+        assert_eq!(read_tag(&path, "XMP-dc:Subject").await, "dog, beach");
+
+        // No `_original` backup file should be left behind.
+        let backup = dir.path().join("tagged.jpg_original");
+        assert!(!backup.exists(), "unexpected backup file: {backup:?}");
     }
 
     #[tokio::test]
@@ -94,5 +129,31 @@ mod tests {
         let result = write_keywords(&path, &[]).await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn non_ascii_keywords_round_trip() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "unicode.jpg");
+
+        write_keywords(&path, &["café".to_string(), "日本語".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(read_tag(&path, "IPTC:Keywords").await, "café, 日本語");
+        assert_eq!(read_tag(&path, "XMP-dc:Subject").await, "café, 日本語");
+    }
+
+    #[tokio::test]
+    async fn dash_prefixed_filename_is_handled() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "-weird.jpg");
+
+        assert!(!has_keywords(&path).await.unwrap());
+
+        write_keywords(&path, &["dog".to_string()]).await.unwrap();
+
+        assert!(has_keywords(&path).await.unwrap());
+        assert_eq!(read_tag(&path, "IPTC:Keywords").await, "dog");
     }
 }
