@@ -9,17 +9,23 @@ Local-LLM image keyword tagging. Two Rust binaries in one Cargo workspace:
   OpenAI-compatible gateway, and returns a parsed keyword list. No
   filesystem access, no database.
 - **`phototag-watch`** (`crates/watch`) — filesystem watcher + backfill tool.
-  Watches configured photo library root paths, and for new/changed images
-  with no existing `IPTC:Keywords`, POSTs them to `phototag-server`, then
-  writes the returned keywords into the file's own
-  `IPTC:Keywords`/`XMP-dc:Subject` metadata via `exiftool`. Also runs in
-  `--backfill` mode: a one-shot walk of the configured roots instead of
-  watching, used for the initial catch-up pass and as the manual recovery
-  path after an outage (no automatic retry).
+  Watches configured photo library root paths, and for any image with no
+  current-version `phototag:v{version}` marker keyword, POSTs it to
+  `phototag-server`, then writes the returned keywords into the file's own
+  `IPTC:Keywords`/`XMP-dc:Subject` metadata via `exiftool` — alongside
+  whatever keywords (if any) were already there, plus the marker itself.
+  Also runs in `--backfill` mode: a one-shot walk of the configured roots
+  instead of watching, used for the initial catch-up pass and as the
+  manual recovery path after an outage (no automatic retry). `--backfill
+  --reindex-outdated` additionally re-tags files whose marker is older
+  than the running binary's version, purely additively (existing keywords,
+  including ones added by hand, are never removed).
 
 Keywords are written directly into each image's own metadata, so any
 downstream tool (photo library, file browser, search index) picks them up
-without depending on this project.
+without depending on this project. See
+`docs/specs/2026-07-22-version-marker-reindex-design.md` for the full
+design of the marker/reindex system.
 
 - **Language:** Rust
 - **Async runtime:** `tokio`
