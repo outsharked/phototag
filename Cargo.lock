@@ -1006,6 +1006,7 @@ dependencies = [
  "phototag-common",
  "phototag-server",
  "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
