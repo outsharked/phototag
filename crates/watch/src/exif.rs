@@ -35,13 +35,32 @@ pub async fn read_keywords(path: &Path) -> Result<Vec<String>> {
 
     Ok(match obj.get("Keywords") {
         None => Vec::new(),
-        Some(serde_json::Value::String(s)) => vec![s.clone()],
-        Some(serde_json::Value::Array(arr)) => arr
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect(),
-        Some(_) => Vec::new(),
+        Some(serde_json::Value::Array(arr)) => {
+            arr.iter().filter_map(json_value_to_keyword).collect()
+        }
+        Some(v) => match json_value_to_keyword(v) {
+            Some(kw) => vec![kw],
+            None => bail!(
+                "unexpected JSON shape for Keywords tag on {}: {:?}",
+                path.display(),
+                v
+            ),
+        },
     })
+}
+
+/// Converts a single exiftool JSON scalar to its keyword text. exiftool's
+/// `-j` output emits list values that look like numbers or booleans
+/// (e.g. a keyword of `"2024"` or `"true"`) as native JSON numbers/bools
+/// rather than strings, so all three scalar shapes must be accepted or a
+/// legitimate keyword would silently vanish.
+fn json_value_to_keyword(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
 }
 
 /// Convenience predicate built on `read_keywords`: true if the file has
@@ -213,6 +232,55 @@ mod tests {
         assert_eq!(
             read_keywords(&path).await.unwrap(),
             vec!["dog".to_string(), "beach".to_string(), "sunset".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_keywords_handles_numeric_looking_single_keyword() {
+        // Regression test: exiftool's -j output emits a single keyword that
+        // looks like a number (e.g. a year) as a bare JSON number, not a
+        // string. It must still round-trip as text, not vanish.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "numeric.jpg");
+        write_keywords(&path, &["2024".to_string()]).await.unwrap();
+
+        assert_eq!(
+            read_keywords(&path).await.unwrap(),
+            vec!["2024".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_keywords_handles_boolean_looking_single_keyword() {
+        // Regression test: same quirk, but for a keyword that looks like a
+        // JSON boolean.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "boolish.jpg");
+        write_keywords(&path, &["true".to_string()]).await.unwrap();
+
+        assert_eq!(
+            read_keywords(&path).await.unwrap(),
+            vec!["true".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn read_keywords_handles_numeric_and_boolean_keywords_in_a_mixed_list() {
+        // Regression test: in a multi-value list, exiftool keeps
+        // number/boolean-looking entries as native JSON types while other
+        // entries stay strings. All of them must survive round-trip as text.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_jpeg(&dir, "mixed.jpg");
+        write_keywords(
+            &path,
+            &["2024".to_string(), "dog".to_string(), "true".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            read_keywords(&path).await.unwrap(),
+            vec!["2024".to_string(), "dog".to_string(), "true".to_string()]
         );
     }
 }
