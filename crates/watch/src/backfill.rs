@@ -1,0 +1,52 @@
+use anyhow::Result;
+use walkdir::WalkDir;
+
+use crate::client::TaggerClient;
+use crate::config::{Config, RootConfig};
+use crate::pipeline::{tag_one_file, TagOutcome};
+
+/// Walks each configured root once, tagging every file that doesn't yet
+/// have keywords. If `only_root` is set, only that named root is walked.
+pub async fn run_backfill(
+    config: &Config,
+    client: &TaggerClient,
+    only_root: Option<&str>,
+) -> Result<()> {
+    for root in &config.roots {
+        if let Some(name) = only_root {
+            if root.name != name {
+                continue;
+            }
+        }
+        tracing::info!(root = %root.name, path = %root.path.display(), "backfill starting");
+        backfill_root(root, &config.watch, client).await;
+    }
+    Ok(())
+}
+
+async fn backfill_root(
+    root: &RootConfig,
+    watch: &crate::config::WatchSettings,
+    client: &TaggerClient,
+) {
+    for entry in WalkDir::new(&root.path).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if !watch.matches_extension(path) {
+            continue;
+        }
+        match tag_one_file(path, client).await {
+            Ok(TagOutcome::Tagged(keywords)) => {
+                tracing::info!(path = %path.display(), ?keywords, "tagged");
+            }
+            Ok(TagOutcome::AlreadyTagged) => {
+                tracing::debug!(path = %path.display(), "already tagged, skipping");
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "tagging failed, skipping");
+            }
+        }
+    }
+}
